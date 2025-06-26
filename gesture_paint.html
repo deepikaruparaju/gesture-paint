@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Gesture Paint Pro Max++ (No Shapes)</title>
+<style>
+  :root {
+    --bg-light: #f0f0f0;
+    --bg-dark: #121212;
+    --fg-light: #222;
+    --fg-dark: #eee;
+    --canvas-bg-light: white;
+    --canvas-bg-dark: #222;
+  }
+  body {
+    margin: 0;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--bg-light);
+    color: var(--fg-light);
+    transition: background 0.3s, color 0.3s;
+  }
+  body.dark {
+    background: var(--bg-dark);
+    color: var(--fg-dark);
+  }
+  #left {
+    width: 70%;
+    position: relative;
+    background: var(--canvas-bg-light);
+    transition: background 0.3s;
+  }
+  body.dark #left {
+    background: var(--canvas-bg-dark);
+  }
+  #right {
+    width: 30%;
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px;
+    box-sizing: border-box;
+    color: white;
+    max-height: 100vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #666 #222;
+  }
+  #right::-webkit-scrollbar {
+    width: 8px;
+  }
+  #right::-webkit-scrollbar-track {
+    background: #222;
+  }
+  #right::-webkit-scrollbar-thumb {
+    background-color: #666;
+    border-radius: 4px;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+    display: block;
+  }
+  video {
+    width: 100%;
+    transform: scaleX(-1); /* mirror */
+    border-radius: 10px;
+  }
+  #controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+    width: 100%;
+  }
+  .btn {
+    padding: 10px;
+    font-size: 14px;
+    background: #333;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .btn:hover {
+    background: #444;
+  }
+  input[type="color"], input[type="range"] {
+    width: 100%;
+    cursor: pointer;
+  }
+  #preview {
+    margin-top: 15px;
+    border: 2px solid white;
+    border-radius: 8px;
+    width: 100%;
+    height: 150px;
+    background: #000;
+  }
+  #darkToggle {
+    margin-top: 10px;
+    background: #444;
+  }
+</style>
+</head>
+<body>
+  <div id="left">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="right">
+    <video id="video" autoplay muted playsinline></video>
+    <div id="controls">
+      <label>🎨 Brush Color</label>
+      <input type="color" id="colorPicker" value="#000000" />
+      <label>📏 Brush Size</label>
+      <input type="range" id="thickness" min="1" max="20" value="4" />
+      <button class="btn" id="eraserBtn">🧽 Toggle Eraser</button>
+      <button class="btn" id="undoBtn">↩️ Undo</button>
+      <button class="btn" id="redoBtn">↪️ Redo</button>
+      <button class="btn" id="clearBtn">♻️ Clear</button>
+      <button class="btn" id="saveBtn">💾 Save</button>
+      <button class="btn" id="darkToggle">🌙 Dark Mode</button>
+      <canvas id="preview"></canvas>
+    </div>
+  </div>
+
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+  <script>
+    // Elements
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const preview = document.getElementById('preview');
+    const pCtx = preview.getContext('2d');
+    const video = document.getElementById('video');
+    canvas.width = window.innerWidth * 0.7;
+    canvas.height = window.innerHeight;
+    preview.width = 300;
+    preview.height = 150;
+
+    // Drawing state
+    let drawing = false;
+    let prevX = null, prevY = null;
+    let drawColor = '#000000';
+    let brushSize = 4;
+    let erasing = false;
+
+    // Undo/Redo stacks (each element: array of points)
+    let undoStack = [];
+    let redoStack = [];
+
+    // Current stroke points
+    let currentStroke = [];
+
+    // Dark mode state
+    let darkMode = false;
+
+    // UI elements
+    const colorPicker = document.getElementById('colorPicker');
+    const thicknessInput = document.getElementById('thickness');
+    const eraserBtn = document.getElementById('eraserBtn');
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const darkToggle = document.getElementById('darkToggle');
+
+    colorPicker.addEventListener('input', e => {
+      drawColor = e.target.value;
+      erasing = false;
+      eraserBtn.textContent = '🧽 Toggle Eraser';
+    });
+    thicknessInput.addEventListener('input', e => brushSize = e.target.value);
+    eraserBtn.addEventListener('click', () => {
+      erasing = !erasing;
+      eraserBtn.textContent = erasing ? '✍️ Draw Mode' : '🧽 Eraser Mode';
+    });
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+    clearBtn.addEventListener('click', () => {
+      clearCanvas();
+      pushUndo([]);
+    });
+    saveBtn.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = 'gesture_drawing.png';
+      link.href = canvas.toDataURL();
+      link.click();
+    });
+    darkToggle.addEventListener('click', () => {
+      darkMode = !darkMode;
+      document.body.classList.toggle('dark', darkMode);
+    });
+
+    // Helpers
+    function isFingerUp(landmarks, tip, base) {
+      return landmarks[tip].y < landmarks[base].y;
+    }
+    function countFingers(landmarks) {
+      const fingers = [
+        isFingerUp(landmarks, 8, 6),   // Index
+        isFingerUp(landmarks, 12, 10), // Middle
+        isFingerUp(landmarks, 16, 14), // Ring
+        isFingerUp(landmarks, 20, 18), // Pinky
+      ];
+      return fingers.filter(Boolean).length;
+    }
+
+    // Stroke drawing
+    function drawLine(points, color, size, erase = false) {
+      if (points.length < 2) return;
+      ctx.strokeStyle = erase ? 'white' : color;
+      ctx.lineWidth = size;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.stroke();
+    }
+
+    // Clear canvas & preview
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      pCtx.clearRect(0, 0, preview.width, preview.height);
+      undoStack = [];
+      redoStack = [];
+      currentStroke = [];
+    }
+
+    // Undo/Redo logic
+    function pushUndo(stroke) {
+      undoStack.push(stroke);
+      redoStack = [];
+      redrawAll();
+    }
+    function undo() {
+      if (undoStack.length === 0) return;
+      redoStack.push(undoStack.pop());
+      redrawAll();
+    }
+    function redo() {
+      if (redoStack.length === 0) return;
+      undoStack.push(redoStack.pop());
+      redrawAll();
+    }
+    function redrawAll() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const stroke of undoStack) {
+        drawLine(stroke.points, stroke.color, stroke.size, stroke.erase);
+      }
+      updatePreview();
+    }
+
+    // Preview update
+    function updatePreview() {
+      pCtx.clearRect(0, 0, preview.width, preview.height);
+      pCtx.drawImage(canvas, 0, 0, preview.width, preview.height);
+    }
+
+    // Main draw function
+    function drawPoint(x, y) {
+      currentStroke.push({x, y});
+      if (prevX !== null && prevY !== null) {
+        ctx.beginPath();
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(x, y);
+        ctx.strokeStyle = erasing ? 'white' : drawColor;
+        ctx.lineWidth = brushSize;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+      prevX = x;
+      prevY = y;
+    }
+
+    // MediaPipe setup
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+
+    let lastGesture = null;
+
+    hands.onResults(results => {
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        const fingersUp = countFingers(landmarks);
+
+        // Gesture-based tool switching
+        // 1 finger (index) = draw
+        // 2 fingers = eraser
+        // 5 fingers = clear canvas
+        if (fingersUp === 1 && isFingerUp(landmarks, 8, 6)) {
+          if (lastGesture !== 'draw') {
+            lastGesture = 'draw';
+            erasing = false;
+            eraserBtn.textContent = '🧽 Toggle Eraser';
+          }
+          drawing = true;
+          const x = (1 - landmarks[8].x) * canvas.width;
+          const y = landmarks[8].y * canvas.height;
+          drawPoint(x, y);
+        } else if (fingersUp === 2 && isFingerUp(landmarks, 8, 6) && isFingerUp(landmarks, 12, 10)) {
+          if (lastGesture !== 'eraser') {
+            lastGesture = 'eraser';
+            erasing = true;
+            eraserBtn.textContent = '✍️ Draw Mode';
+          }
+          drawing = true;
+          const x = (1 - landmarks[8].x) * canvas.width;
+          const y = landmarks[8].y * canvas.height;
+          drawPoint(x, y);
+        } else if (fingersUp === 5) {
+          if (lastGesture !== 'clear') {
+            clearCanvas();
+            pushUndo([]);
+            lastGesture = 'clear';
+            // Small delay so clear is not called repeatedly
+            setTimeout(() => { lastGesture = null; }, 1000);
+          }
+          drawing = false;
+          prevX = null;
+          prevY = null;
+          currentStroke = [];
+        } else {
+          if (drawing) {
+            finalizeStroke();
+          }
+          drawing = false;
+          prevX = null;
+          prevY = null;
+          currentStroke = [];
+          lastGesture = null;
+        }
+      } else {
+        if (drawing) finalizeStroke();
+        drawing = false;
+        prevX = null;
+        prevY = null;
+        currentStroke = [];
+        lastGesture = null;
+      }
+    });
+
+    // Finalize stroke for undo only
+    function finalizeStroke() {
+      if (currentStroke.length === 0) return;
+      pushUndo({
+        points: currentStroke.slice(),
+        color: drawColor,
+        size: brushSize,
+        erase: erasing
+      });
+      currentStroke = [];
+    }
+
+    // Camera setup
+    const camera = new Camera(video, {
+      onFrame: async () => await hands.send({ image: video }),
+      width: 640,
+      height: 480
+    });
+    camera.start();
+  </script>
+</body>
+</html>
